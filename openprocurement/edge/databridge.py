@@ -28,6 +28,8 @@ from gevent.queue import Queue, Empty
 from datetime import datetime, timedelta
 from .workers import ResourceItemWorker
 from .utils import clear_api_client_queue
+from elasticsearch import Elasticsearch
+from functools import partial
 
 try:
     import urllib3.contrib.pyopenssl
@@ -147,9 +149,16 @@ class EdgeDataBridge(object):
         else:
             raise DataBridgeConfigError('In config dictionary empty or missing'
                                         ' \'tenders_api_server\'')
-        self.db = prepare_couchdb(self.couch_url, self.db_name, logger)
-        db_url = self.couch_url + '/' + self.db_name
-        prepare_couchdb_views(db_url, self.workers_config['resource'], logger)
+        #self.db = prepare_couchdb(self.couch_url, self.db_name, logger)
+        #db_url = self.couch_url + '/' + self.db_name
+        #prepare_couchdb_views(db_url, self.workers_config['resource'], logger)
+        self.db = Elasticsearch()
+        self.db.indices.create(index=self.db_name, ignore=400)
+        settings = self.db.indices.get_settings(index=self.db_name, name='index.mapping.total_fields.limit')
+        if settings.get(self.db_name, {}).get(u'settings', {}).get(u'index', {}).get(u'mapping', {}).get(u'total_fields', {}).get(u'limit', u'1000') != u'4000':
+            self.db.indices.put_settings(body={'index.mapping.total_fields.limit': 4000}, index=self.db_name)
+        self.db.index_get = partial(self.db.get, index=self.db_name)
+        self.db.index_bulk = partial(self.db.bulk, index=self.db_name)
         collector_config = {
             'main': {
                 'storage': 'couchdb',
@@ -157,8 +166,8 @@ class EdgeDataBridge(object):
                 'log_db': self.log_db_name
             }
         }
-        self.server = Server(self.couch_url, session=Session(retry_delays=range(10)))
-        self.logger = LogsCollector(collector_config)
+        #self.server = Server(self.couch_url, session=Session(retry_delays=range(10)))
+        #self.logger = LogsCollector(collector_config)
         self.view_path = '_design/{}/_view/by_dateModified'.format(
             self.workers_config['resource'])
         extra_params = {
@@ -243,8 +252,10 @@ class EdgeDataBridge(object):
         sleep_before_retry = 2
         for i in xrange(0, 3):
             try:
-                rows = self.db.view(self.view_path, keys=input_dict.values())
-                resp_dict = {k.id: k.key for k in rows}
+                #rows = self.db.view(self.view_path, keys=input_dict.values())
+                #resp_dict = {k.id: k.key for k in rows}
+                rows = self.db.mget(index=self.db_name, doc_type=self.workers_config['resource'], body={"ids":input_dict.keys()}, _source_include="dateModified")
+                resp_dict = {k['_id']: (k['_source']["dateModified"] if '_source' in k else k['found']) for k in rows['docs']}
                 break
             except (IncompleteRead, Exception) as e:
                 logger.error('Error while send bulk {}'.format(e.message))
@@ -421,14 +432,14 @@ class EdgeDataBridge(object):
 
     def gevent_watcher(self):
         self.perfomance_watcher()
-        for t in self.server.tasks():
-            if (t['type'] == 'indexer' and t['database'] == self.db_name and
-                    t.get('design_document', None) == '_design/{}'.format(
-                        self.workers_config['resource'])):
-                logger.info('Watcher: Waiting for end of view indexing. Current'
-                            ' progress: {} %'.format(t['progress']))
+        #for t in self.server.tasks():
+            #if (t['type'] == 'indexer' and t['database'] == self.db_name and
+                    #t.get('design_document', None) == '_design/{}'.format(
+                        #self.workers_config['resource'])):
+                #logger.info('Watcher: Waiting for end of view indexing. Current'
+                            #' progress: {} %'.format(t['progress']))
 
-        spawn(self.logger.save, self.bridge_stats())
+        #spawn(self.logger.save, self.bridge_stats())
         self.reset_log_counters()
         # for i in xrange(0, self.filter_workers_pool.free_count()):
         #     self.filter_workers_pool.spawn(self.fill_resource_items_queue)

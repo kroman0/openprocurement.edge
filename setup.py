@@ -7,22 +7,27 @@ with open(os.path.join(here, 'README.rst')) as f:
     README = f.read()
 
 requires = [
-    'cornice',
     'gevent',
-    'pyramid_exclog',
     'setuptools',
     'couchdb',
     'couchapp',
     'pycrypto',
-    'openprocurement_client',
     'munch',
     'tzlocal',
     'pyyaml',
     'psutil',
     'iso8601'
 ]
-test_requires = requires + [
-    'requests',
+edge_requires = [
+    'pyramid_exclog',
+    'cornice',
+]
+bridge_requires = [
+    'elasticsearch',
+    'openprocurement_client',
+]
+test_requires = requires + edge_requires + bridge_requires + [
+   'requests',
     'webtest',
     'python-coveralls',
     'nose',

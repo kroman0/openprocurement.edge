@@ -79,7 +79,7 @@ class ResourceItemWorker(Greenlet):
                     del api_client_dict
                 else:
                     break
-            logger.info('Got api_client ID: {} {}'.format(
+            logger.debug('Got api_client ID: {} {}'.format(
                 api_client_dict['id'], api_client_dict['client'].session.headers['User-Agent']))
             return api_client_dict
         else:
@@ -99,7 +99,7 @@ class ResourceItemWorker(Greenlet):
     def _get_resource_item_from_public(self, api_client_dict,
                                        queue_resource_item):
         try:
-            logger.info('Request interval {} sec. for client {}'.format(
+            logger.debug('Request interval {} sec. for client {}'.format(
                 api_client_dict['request_interval'],
                 api_client_dict['client'].session.headers['User-Agent']))
             start_request = datetime.now()
@@ -211,8 +211,8 @@ class ResourceItemWorker(Greenlet):
                      resource_item_doc):
         resource_item['doc_type'] = self.config['resource'][:-1].title()
         resource_item['_id'] = resource_item['id']
-        if resource_item_doc:
-            resource_item['_rev'] = resource_item_doc['_rev']
+        #if resource_item_doc:
+            #resource_item['_rev'] = resource_item_doc['_rev']
         bulk_doc = self.bulk.get(resource_item['id'])
 
         if bulk_doc and bulk_doc['dateModified'] < resource_item['dateModified']:
@@ -246,7 +246,14 @@ class ResourceItemWorker(Greenlet):
                 (datetime.now() - self.start_time).total_seconds() >
                 self.bulk_save_interval or self.exit):
             try:
-                res = self.db.update(self.bulk.values())
+                body = []
+                for i, j in self.bulk.items():
+                    doc = j.copy()
+                    del doc['_id']
+                    body.append({"index": {"_id": i, "_type": self.config['resource'], "_index": "op_public"}})
+                    body.append(doc)
+                #res = self.db.update(self.bulk.values())
+                res = self.db.index_bulk(body=body, doc_type=self.config['resource'])
                 self.log_dict['timeshift'] = self._get_average_timeshift()
                 logger.info('Save bulk docs to db.')
                 logger.info('Average timeshift {} bulk is: {} sec.'.format(
@@ -263,9 +270,13 @@ class ResourceItemWorker(Greenlet):
                 self.start_time = datetime.now()
                 return
             self.bulk = {}
-            for success, doc_id, rev_or_exc in res:
+            #for success, doc_id, rev_or_exc in res:
+            for item in res['items']:
+                success = item['index']['status'] in [200, 201]
+                doc_id = item['index']['_id']
+                result = item['index']['result'] if 'result' in item['index'] else item['index']['error']['reason']
                 if success:
-                    if not rev_or_exc.startswith('1-'):
+                    if result == "updated":
                         self.log_dict['update_documents'] += 1
                         logger.info('Update {} {}'.format(
                             self.config['resource'][:-1], doc_id))
@@ -275,17 +286,17 @@ class ResourceItemWorker(Greenlet):
                             self.config['resource'][:-1], doc_id))
                     continue
                 else:
-                    if rev_or_exc.message != u'New doc with oldest dateModified.':
+                    if result != u'New doc with oldest dateModified.':
                         self.add_to_retry_queue({'id': doc_id,
                                                  'dateModified': None})
                         logger.error('Put to retry queue {} {} with '
                                      'reason: {}'.format(
                                          self.config['resource'][:-1],
-                                         doc_id, rev_or_exc.message))
+                                         doc_id, result))
                     else:
                         logger.debug('Ignored {} {} with reason: {}'.format(
                             self.config['resource'][:-1], doc_id,
-                            rev_or_exc))
+                            result))
                         self.log_dict['skiped'] += 1
                         continue
             self.start_time = datetime.now()
@@ -310,7 +321,8 @@ class ResourceItemWorker(Greenlet):
             # Try get resource item from local storage
             try:
                 # Resource object from local db server
-                resource_item_doc = self.db.get(queue_resource_item['id'])
+                resource_item_doc = self.db.index_get(doc_type=self.config['resource'], id=queue_resource_item['id'], ignore=[404])
+                resource_item_doc = resource_item_doc['_source'] if resource_item_doc and '_source' in resource_item_doc else None
                 if queue_resource_item['dateModified'] is None:
                     public_doc = self._get_resource_item_from_public(
                         api_client_dict, queue_resource_item)
